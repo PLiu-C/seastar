@@ -37,6 +37,8 @@ module seastar;
 #include <seastar/util/memory_diagnostics.hh>
 #include <seastar/core/reactor_config.hh>
 #include <seastar/core/resource.hh>
+
+#include <boost/type.hpp>
 #endif
 
 namespace seastar::program_options {

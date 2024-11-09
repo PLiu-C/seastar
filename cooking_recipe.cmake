@@ -241,8 +241,7 @@ cooking_ingredient (ragel
 
 cooking_ingredient (lksctp-tools
   EXTERNAL_PROJECT_ARGS
-    URL https://sourceforge.net/projects/lksctp/files/lksctp-tools/lksctp-tools-1.0.16.tar.gz
-    URL_MD5 708bb0b5a6806ad6e8d13c55b067518e
+    URL https://github.com/sctp/lksctp-tools/archive/refs/tags/lksctp-tools-1.0.17.tar.gz
     PATCH_COMMAND ./bootstrap
     CONFIGURE_COMMAND <SOURCE_DIR>/configure --prefix=<INSTALL_DIR> --srcdir=<SOURCE_DIR>
     BUILD_COMMAND <DISABLE>
