@@ -40,6 +40,7 @@ module;
 #include <sys/socket.h>
 #include <seastar/util/assert.hh>
 
+
 #ifdef SEASTAR_MODULE
 module seastar;
 #else
@@ -838,6 +839,9 @@ private:
     send_ctx _send;
     bool _closed;
 public:
+
+    pollable_fd& get_fd() { return _fd; }
+
     /// Creates a channel that is not bound to any socket address. The channel
     /// can be used to communicate with adressess that belong to the \param
     /// family.
@@ -1229,3 +1233,94 @@ void posix_network_stack::clear_stats(unsigned scheduling_group_id) {
 }
 
 }
+
+
+#include <seastar/net/multicast_udp_channel.hh>
+namespace seastar {
+
+class multicast_udp_channel::impl {
+private:
+    pollable_fd& get_fd(net::datagram_channel& chan) {
+        auto* impl = dynamic_cast<net::posix_datagram_channel*>(chan.get_impl());
+        if (!impl) {
+            throw std::runtime_error("Not a POSIX UDP channel");
+        }
+        return impl->get_fd();
+    }
+
+public:
+
+    future<> join(net::datagram_channel& chan,
+                 const std::string& interface_name, 
+                 const net::socket_address& mcast_addr) {
+        auto& fd = get_fd(chan);
+        
+        // 1. Enable reuse options
+        int val = 1;
+        fd.get_file_desc().setsockopt(SOL_SOCKET, SO_REUSEADDR, val);
+        fd.get_file_desc().setsockopt(SOL_SOCKET, SO_REUSEPORT, val);
+
+        // 2. Get interface index using ioctl
+        struct ifreq if_req;
+        memset(&if_req, 0, sizeof(if_req));
+        strncpy(if_req.ifr_name, interface_name.c_str(), IFNAMSIZ - 1);
+        fd.get_file_desc().ioctl(SIOCGIFINDEX, if_req);
+        unsigned int ifindex = if_req.ifr_ifindex;
+
+        // 3. Join group using modern API
+        struct group_req gr;
+        memset(&gr, 0, sizeof(gr));
+        gr.gr_interface = ifindex;
+        const struct sockaddr_in* addr = &mcast_addr.as_posix_sockaddr_in();
+        memcpy(&gr.gr_group, addr, sizeof(struct sockaddr_in));
+        
+        fd.get_file_desc().setsockopt(IPPROTO_IP, MCAST_JOIN_GROUP, gr);
+        
+        return make_ready_future<>();
+    }
+
+    future<> leave(net::datagram_channel& chan,
+                  const std::string& interface_name, 
+                  const net::socket_address& mcast_addr) {
+        auto& fd = get_fd(chan);
+
+        // Get interface index using ioctl
+        struct ifreq if_req;
+        memset(&if_req, 0, sizeof(if_req));
+        strncpy(if_req.ifr_name, interface_name.c_str(), IFNAMSIZ - 1);
+        fd.get_file_desc().ioctl(SIOCGIFINDEX, if_req);
+        unsigned int ifindex = if_req.ifr_ifindex;
+
+        struct group_req gr;
+        memset(&gr, 0, sizeof(gr));
+        gr.gr_interface = ifindex;
+        const struct sockaddr_in* addr = &mcast_addr.as_posix_sockaddr_in();
+        memcpy(&gr.gr_group, addr, sizeof(struct sockaddr_in));
+
+        fd.get_file_desc().setsockopt(IPPROTO_IP, MCAST_LEAVE_GROUP, gr);
+        
+        return make_ready_future<>();
+    }
+};
+
+// Implementation of multicast_udp_channel methods
+multicast_udp_channel::multicast_udp_channel(net::datagram_channel chan)
+    : _chan(std::move(chan))
+    , _impl(std::make_unique<impl>()) 
+{}
+
+multicast_udp_channel::~multicast_udp_channel() = default;
+multicast_udp_channel::multicast_udp_channel(multicast_udp_channel&&) noexcept = default;
+multicast_udp_channel& multicast_udp_channel::operator=(multicast_udp_channel&&) noexcept = default;
+
+future<> multicast_udp_channel::join(const std::string& interface_name,
+                                   const net::socket_address& mcast_addr) {
+    return _impl->join(_chan, interface_name, mcast_addr);
+}
+
+future<> multicast_udp_channel::leave(const std::string& interface_name,
+                                    const net::socket_address& mcast_addr) {
+    return _impl->leave(_chan, interface_name, mcast_addr);
+}
+
+} // namespace seastar
