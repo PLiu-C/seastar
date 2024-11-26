@@ -116,6 +116,10 @@ using udp_datagram = datagram;
 class datagram_channel {
 private:
     std::unique_ptr<datagram_channel_impl> _impl;
+
+public:
+    datagram_channel_impl* get_impl() const { return _impl.get(); }
+
 public:
     datagram_channel() noexcept;
     datagram_channel(std::unique_ptr<datagram_channel_impl>) noexcept;
