@@ -858,8 +858,14 @@ public:
     posix_datagram_channel(socket_address local)
         : _recv(is_inet(local.family())), _closed(false) {
         auto fd = create_socket(local.family());
+        
+        // Always enable these options for multicast support
+        fd.setsockopt(SOL_SOCKET, SO_REUSEADDR, 1);
+        if (engine().posix_reuseport_available()) {
+            fd.setsockopt(SOL_SOCKET, SO_REUSEPORT, 1);
+        }
+        
         fd.bind(local.u.sa, local.addr_length);
-
         _address = fd.get_address();
         _fd = std::move(fd);
     }
