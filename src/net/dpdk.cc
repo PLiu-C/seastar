@@ -522,6 +522,12 @@ public:
     }
 
     virtual rss_key_type rss_key() const override { return _rss_key; }
+
+
+    std::unique_ptr<dpdk_multicast_impl> make_multicast_impl() {
+        return std::make_unique<dpdk_multicast_impl>(this);
+    }
+
 };
 
 template <bool HugetlbfsMemBackend>
@@ -2260,6 +2266,70 @@ std::unique_ptr<qp> dpdk_device::init_local_queue(const program_options::option_
     });
     return qp;
 }
+
+// Add after class dpdk_qp definition
+
+class dpdk_multicast_impl {
+private:
+    dpdk_device* _dev;
+    uint16_t _port_idx;
+
+public:
+    dpdk_multicast_impl(dpdk_device* dev) 
+        : _dev(dev)
+        , _port_idx(dev->port_idx()) 
+    {}
+
+    // Join multicast group on specified interface
+    future<> join(const std::string& interface_name, const socket_address& mcast_addr) {
+        struct rte_ether_addr mac_addr;
+        
+        // Convert IP multicast address to MAC multicast address
+        // Per RFC 1112, map IP multicast to ethernet multicast
+        mac_addr.addr_bytes[0] = 0x01;
+        mac_addr.addr_bytes[1] = 0x00;
+        mac_addr.addr_bytes[2] = 0x5e;
+        mac_addr.addr_bytes[3] = (mcast_addr.as_ipv4_address().ip & 0x7f0000) >> 16;
+        mac_addr.addr_bytes[4] = (mcast_addr.as_ipv4_address().ip & 0x00ff00) >> 8;
+        mac_addr.addr_bytes[5] = (mcast_addr.as_ipv4_address().ip & 0x0000ff);
+
+        // Add multicast MAC address to NIC filtering
+        auto ret = rte_eth_dev_mac_addr_add(_port_idx, &mac_addr, 0);
+        if (ret < 0) {
+            return make_exception_future<>(std::runtime_error("Failed to add multicast MAC address"));
+        }
+
+        // Enable multicast reception
+        ret = rte_eth_allmulticast_enable(_port_idx);
+        if (ret < 0) {
+            return make_exception_future<>(std::runtime_error("Failed to enable multicast reception"));
+        }
+
+        return make_ready_future<>();
+    }
+
+    // Leave multicast group
+    future<> leave(const std::string& interface_name, const socket_address& mcast_addr) {
+        struct rte_ether_addr mac_addr;
+        
+        // Convert IP multicast address to MAC multicast address
+        mac_addr.addr_bytes[0] = 0x01;
+        mac_addr.addr_bytes[1] = 0x00;
+        mac_addr.addr_bytes[2] = 0x5e;
+        mac_addr.addr_bytes[3] = (mcast_addr.as_ipv4_address().ip & 0x7f0000) >> 16;
+        mac_addr.addr_bytes[4] = (mcast_addr.as_ipv4_address().ip & 0x00ff00) >> 8;
+        mac_addr.addr_bytes[5] = (mcast_addr.as_ipv4_address().ip & 0x0000ff);
+
+        // Remove multicast MAC address from NIC filtering
+        auto ret = rte_eth_dev_mac_addr_remove(_port_idx, &mac_addr);
+        if (ret < 0) {
+            return make_exception_future<>(std::runtime_error("Failed to remove multicast MAC address"));
+        }
+
+        return make_ready_future<>();
+    }
+};
+
 } // namespace dpdk
 
 /******************************** Interface functions *************************/
@@ -2343,3 +2413,49 @@ dpdk_options::dpdk_options(program_options::option_group* parent_group)
 }
 
 }
+
+
+#ifdef SEASTAR_HAVE_DPDK
+
+#include <seastar/net/multicast_udp_channel.hh>
+namespace seastar {
+
+class multicast_udp_channel::impl {
+private:
+    std::unique_ptr<dpdk_multicast_impl> _dpdk_impl;
+    
+public:
+    impl(dpdk_device* dev) : _dpdk_impl(dev->make_multicast_impl()) {}
+    
+    future<> join(const std::string& interface_name, const socket_address& mcast_addr) {
+        return _dpdk_impl->join(interface_name, mcast_addr);
+    }
+    
+    future<> leave(const std::string& interface_name, const socket_address& mcast_addr) {
+        return _dpdk_impl->leave(interface_name, mcast_addr);
+    }
+};
+
+// Implementation of multicast_udp_channel methods
+multicast_udp_channel::multicast_udp_channel(net::datagram_channel chan)
+    : _chan(std::move(chan))
+    , _impl(std::make_unique<impl>()) 
+{}
+
+multicast_udp_channel::~multicast_udp_channel() = default;
+multicast_udp_channel::multicast_udp_channel(multicast_udp_channel&&) noexcept = default;
+multicast_udp_channel& multicast_udp_channel::operator=(multicast_udp_channel&&) noexcept = default;
+
+future<> multicast_udp_channel::join(const std::string& interface_name,
+                                   const net::socket_address& mcast_addr) {
+    return _impl->join(_chan, interface_name, mcast_addr);
+}
+
+future<> multicast_udp_channel::leave(const std::string& interface_name,
+                                    const net::socket_address& mcast_addr) {
+    return _impl->leave(_chan, interface_name, mcast_addr);
+}
+
+} // namespace seastar
+
+#endif // SEASTAR_HAVE_DPDK
