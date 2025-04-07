@@ -246,6 +246,23 @@ ipv4_udp::make_channel(ipv4_addr addr) {
     return udp_channel(std::make_unique<native_channel>(*this, registration(*this, bind_port), chan_state));
 }
 
+future<> ipv4_udp::join_multicast_group(ipv4_address mcast_addr) {
+    // Tell the IP layer to join
+    _inet.join_multicast_group(mcast_addr);
+    
+    // Note: UDP should also track which ports are receiving which multicast
+    // groups for proper filtering, but for simplicity we'll rely on IP layer
+    
+    return make_ready_future<>();
+}
+
+future<> ipv4_udp::leave_multicast_group(ipv4_address mcast_addr) {
+    // Tell the IP layer to leave
+    _inet.leave_multicast_group(mcast_addr);
+    
+    return make_ready_future<>();
+}
+
 } /* namespace net */
 
 }

@@ -48,6 +48,7 @@
 
 #include "ipv4_address.hh"
 #include "ipv6_address.hh"
+#include <seastar/net/igmp.hh>
 
 namespace seastar {
 
@@ -316,6 +317,8 @@ private:
     circular_buffer<l3_protocol::l3packet> _packetq;
     unsigned _pkt_provider_idx = 0;
     metrics::metric_groups _metrics;
+    std::unordered_set<ipv4_address> _mcast_groups;
+    std::unique_ptr<net::igmp> _igmp;
 private:
     future<> handle_received_packet(packet p, ethernet_address from);
     bool forward(forward_hash& out_hash_data, packet& p, size_t off);
@@ -333,7 +336,18 @@ private:
         frag_arm(now);
     }
 public:
-    explicit ipv4(interface* netif);
+    ipv4(interface* netif);
+    /* : _netif(netif), _mcast_groups(), _igmp(std::make_unique<net::igmp>(*this)) {
+        _pkt_providers.push_back([this] {
+            std::optional<ipv4_traits::l4packet> l4p;
+            if (!_packetq.empty()) {
+                l4p = std::move(_packetq.front());
+                _packetq.pop_front();
+                _queue_space.signal(l4p.value().p.len());
+            }
+            return l4p;
+        });
+    }*/
     void set_host_address(ipv4_address ip);
     ipv4_address host_address() const;
     void set_gw_address(ipv4_address ip);
@@ -361,6 +375,15 @@ public:
         _pkt_providers.push_back(std::move(func));
     }
     future<ethernet_address> get_l2_dst_address(ipv4_address to);
+    bool is_multicast(ipv4_address addr) const {
+        return (ntohl(addr.ip) & 0xF0000000) == 0xE0000000;
+    }
+    void join_multicast_group(ipv4_address mcast_addr);
+    void leave_multicast_group(ipv4_address mcast_addr);
+    bool is_member(ipv4_address mcast_addr) const {
+        return _mcast_groups.find(mcast_addr) != _mcast_groups.end();
+    }
+    ethernet_address ip_to_mac_multicast(ipv4_address ip) const;
 };
 
 template <ip_protocol_num ProtoNum>

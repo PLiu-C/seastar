@@ -302,6 +302,16 @@ public:
         // not necessary be true in the future
         return forward_dst(hash2qid(hash), [hash] { return hash; });
     }
+    // Add multicast MAC address to receive filter
+    virtual future<> add_multicast_mac(ethernet_address mac) {
+        // Default implementation - may be overridden by specific devices
+        return make_ready_future<>();
+    }
+    // Remove multicast MAC address from receive filter
+    virtual future<> del_multicast_mac(ethernet_address mac) {
+        // Default implementation
+        return make_ready_future<>();
+    }
 };
 
 }

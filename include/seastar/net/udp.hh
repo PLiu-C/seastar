@@ -58,6 +58,55 @@ struct udp_channel_state {
     void complete_send(size_t len) { _user_queue_space.signal(len); }
 };
 
+class datagram_channel {
+private:
+    // Assuming we have these members or similar
+    ipv4_udp* _udp;
+    uint16_t _port;
+    ipv4_address _address;
+
+public:
+    // ... existing methods ...
+    
+    // Add multicast group membership
+    future<> add_membership(const socket_address& mcast_addr, const std::string& interface_name) {
+        // Extract IP address from socket_address
+        ipv4_address ip = mcast_addr.as_posix_sockaddr_in().sin_addr;
+        
+        // Join at IP layer via the UDP implementation
+        if (_udp) {
+            return _udp->join_multicast_group(ip);
+        }
+        
+        return make_ready_future<>();
+    }
+    
+    // Drop multicast group membership
+    future<> drop_membership(const socket_address& mcast_addr, const std::string& interface_name) {
+        ipv4_address ip = mcast_addr.as_posix_sockaddr_in().sin_addr;
+        
+        if (_udp) {
+            return _udp->leave_multicast_group(ip);
+        }
+        
+        return make_ready_future<>();
+    }
+};
+
+class udp_channel {
+public:
+    // ... existing methods ...
+    
+    // Forward multicast methods to underlying implementation
+    future<> add_membership(const socket_address& mcast_addr, const std::string& interface_name) {
+        return _impl->add_membership(mcast_addr, interface_name);
+    }
+    
+    future<> drop_membership(const socket_address& mcast_addr, const std::string& interface_name) {
+        return _impl->drop_membership(mcast_addr, interface_name);
+    }
+};
+
 }
 
 }

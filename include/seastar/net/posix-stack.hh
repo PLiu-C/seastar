@@ -121,6 +121,9 @@ public:
     }
     future<temporary_buffer<char>> get() override;
     future<> close() override;
+    file_desc get_file_desc() const {
+        return _fd.dup();
+    }
 };
 
 class posix_data_sink_impl : public data_sink_impl {

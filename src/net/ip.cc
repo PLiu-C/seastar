@@ -56,7 +56,10 @@ ipv4::ipv4(interface* netif)
     , _host_address(0)
     , _gw_address(0)
     , _netmask(0)
-    , _l3(netif, eth_protocol_num::ipv4, [this] { return get_packet(); })
+    , _l3(netif, eth_protocol_num::ipv4, [this] { return get_packet_filter(); })
+    , _packet_filter(nullptr)
+    , _mcast_groups()
+    , _igmp(std::make_unique<net::igmp>(*this))
     , _tcp(*this)
     , _icmp(*this)
     , _udp(*this)
@@ -166,8 +169,19 @@ ipv4::handle_received_packet(packet p, ethernet_address from) {
     }
 
     if (h.dst_ip != _host_address) {
-        // FIXME: forward
-        return make_ready_future<>();
+        // Not our unicast address - check if it's multicast
+        ipv4_address dst_ip = h.dst_ip;
+        
+        if (is_multicast(dst_ip)) {
+            // Accept only if we're a member of this group
+            if (!is_member(dst_ip)) {
+                return make_ready_future<>(); // Drop packet - not a member
+            }
+            // Otherwise continue processing for multicast
+        } else {
+            // Not unicast to us and not multicast - drop
+            return make_ready_future<>();
+        }
     }
 
     // Does this IP datagram need reassembly
@@ -488,6 +502,64 @@ void icmp::received(packet p, ipaddr from, ipaddr to) {
             _packetq.emplace_back(ipv4_traits::l4packet{from, std::move(p), e_dst, ip_protocol_num::icmp});
         });
     }
+}
+
+ethernet_address ipv4::ip_to_mac_multicast(ipv4_address ip) const {
+    uint32_t addr = ntohl(ip.ip);
+    uint8_t mac[6];
+    mac[0] = 0x01;
+    mac[1] = 0x00;
+    mac[2] = 0x5e;
+    mac[3] = (addr >> 16) & 0x7f; // Map 23 bits, zeroing high bit of first octet
+    mac[4] = (addr >> 8) & 0xff;
+    mac[5] = addr & 0xff;
+    return ethernet_address(mac);
+}
+
+void ipv4::join_multicast_group(ipv4_address mcast_addr) {
+    if (!is_multicast(mcast_addr)) {
+        throw std::runtime_error("Address is not multicast");
+    }
+    
+    // Add to local set
+    _mcast_groups.insert(mcast_addr);
+    
+    // Add MAC to interface
+    auto mac = ip_to_mac_multicast(mcast_addr);
+    if (_netif) {
+        _netif->add_multicast_mac(mac);
+    }
+    
+    // Send IGMP Join
+    if (_igmp) {
+        // This would be a background operation
+        (void)_igmp->send_join(mcast_addr);
+    }
+}
+
+void ipv4::leave_multicast_group(ipv4_address mcast_addr) {
+    if (!is_multicast(mcast_addr)) {
+        return;
+    }
+    
+    // Remove from local set
+    _mcast_groups.erase(mcast_addr);
+    
+    // Remove MAC from interface
+    auto mac = ip_to_mac_multicast(mcast_addr);
+    if (_netif) {
+        _netif->del_multicast_mac(mac);
+    }
+    
+    // Send IGMP Leave
+    if (_igmp) {
+        // This would be a background operation
+        (void)_igmp->send_leave(mcast_addr);
+    }
+}
+
+bool ipv4::is_member(ipv4_address mcast_addr) const {
+    return _mcast_groups.find(mcast_addr) != _mcast_groups.end();
 }
 
 }
