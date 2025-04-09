@@ -762,6 +762,7 @@ add_library (seastar
   src/websocket/parser.cc
   src/websocket/common.cc
   src/websocket/server.cc
+  src/net/multicast_udp_channel.cc
   )
 
 add_library (Seastar::seastar ALIAS seastar)

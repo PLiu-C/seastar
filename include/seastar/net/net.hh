@@ -141,6 +141,8 @@ public:
     uint16_t hw_queues_count();
     rss_key_type rss_key() const;
     friend class l3_protocol;
+
+    std::shared_ptr<device> get_device() const { return _dev; } // PL: Added this
 };
 
 struct qp_stats_good {

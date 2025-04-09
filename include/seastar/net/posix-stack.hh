@@ -217,6 +217,7 @@ public:
     std::vector<network_interface> network_interfaces() override;
     virtual statistics stats(unsigned scheduling_group_id) override;
     virtual void clear_stats(unsigned scheduling_group_id) override;
+    virtual multicast_udp_channel make_multicast_udp_channel(const socket_address& local_addr) override;
 };
 
 class posix_ap_network_stack : public posix_network_stack {

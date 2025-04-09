@@ -150,6 +150,8 @@ using udp_channel = datagram_channel;
 
 class network_interface_impl;
 
+class multicast_udp_channel;
+
 } /* namespace net */
 
 /// \addtogroup networking-module
@@ -496,6 +498,7 @@ public:
      * return by value.
      */
     virtual std::vector<network_interface> network_interfaces();
+    virtual net::multicast_udp_channel make_multicast_udp_channel(const socket_address& local_addr) = 0;
 };
 
 struct network_stack_entry {

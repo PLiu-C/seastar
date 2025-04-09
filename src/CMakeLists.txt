@@ -82,6 +82,7 @@ target_sources (seastar-module
     http/url.cc
     json/formatter.cc
     json/json_elements.cc
+    net/multicast_udp_channel.cc
   )
 target_include_directories (seastar-module
   PUBLIC

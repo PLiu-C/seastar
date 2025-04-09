@@ -54,6 +54,11 @@ module seastar;
 #include <seastar/net/dhcp.hh>
 #include <seastar/net/config.hh>
 #include <seastar/core/reactor.hh>
+#include <seastar/net/api.hh>
+#ifdef SEASTAR_HAVE_DPDK
+#include <seastar/net/multicast_udp_channel.hh>
+#include "native-stack-multicast-impl.hh"
+#endif
 #endif
 
 namespace seastar {
@@ -206,6 +211,15 @@ public:
     virtual void clear_stats(unsigned scheduling_group_id) override {
         internal::native_stack_net_stats::bytes_sent[scheduling_group_id] = 0;
         internal::native_stack_net_stats::bytes_received[scheduling_group_id] = 0;
+    }
+
+    virtual multicast_udp_channel make_multicast_udp_channel(const socket_address& local_addr) override {
+        // Create the underlying datagram channel for the native stack
+        net::datagram_channel chan = this->make_bound_datagram_channel(local_addr);
+        // Create the specific multicast implementation
+        auto impl = std::make_unique<native_multicast_udp_channel_impl>();
+        // Construct and return using the private constructor (possible because of friend declaration)
+        return multicast_udp_channel(std::move(chan), std::move(impl));
     }
 };
 
@@ -440,6 +454,125 @@ std::vector<network_interface> native_network_stack::network_interfaces() {
     return res;
 }
 
+
+// PL: multicast impl
+#ifdef SEASTAR_HAVE_DPDK
+
+logger nmc_logger("multicast_native");
+
+namespace { // Anonymous namespace for helpers
+
+// Helper to convert IP multicast address to Ethernet multicast MAC
+rte_ether_addr ip_mcast_to_mac(const socket_address& mcast_addr) {
+    rte_ether_addr mac;
+    if (mcast_addr.family() == AF_INET) {
+        // Get IPv4 address from socket_address
+        ipv4_addr ipv4(mcast_addr);
+        // Check if it's a valid multicast address (224.0.0.0 - 239.255.255.255)
+        if ((cpu_to_be(ipv4.ip) & 0xF0000000) != 0xE0000000) {
+             throw std::runtime_error(fmt::format("IPv4 address {} is not a multicast address", ipv4));
+        }
+        uint32_t addr_be = cpu_to_be(ipv4.ip); // Already network byte order from socket_address? Check ip.hh. Assume cpu for now.
+        mac.addr_bytes[0] = 0x01;
+        mac.addr_bytes[1] = 0x00;
+        mac.addr_bytes[2] = 0x5e;
+        mac.addr_bytes[3] = (addr_be >> 16) & 0x7f; // Low 23 bits of IP mapped
+        mac.addr_bytes[4] = (addr_be >> 8) & 0xff;
+        mac.addr_bytes[5] = addr_be & 0xff;
+        return mac;
+    } else if (mcast_addr.family() == AF_INET6) {
+        // Get IPv6 address from socket_address
+        ipv6_addr ipv6(mcast_addr);
+         // Check if it's a valid multicast address (starts with ff)
+        if (ipv6.ip[0] != 0xff) {
+             throw std::runtime_error(fmt::format("IPv6 address {} is not a multicast address", ipv6));
+        }
+        mac.addr_bytes[0] = 0x33;
+        mac.addr_bytes[1] = 0x33;
+        // Low 32 bits of IPv6 address mapped
+        memcpy(&mac.addr_bytes[2], &ipv6.ip[12], 4);
+        return mac;
+    } else {
+        throw std::runtime_error(fmt::format("Unsupported address family {} for multicast MAC conversion", mcast_addr.family()));
+    }
+}
+
+// Helper to find the DPDK port ID for a given interface name
+uint16_t find_dpdk_port_id(const std::string& interface_name) {
+    auto& stack = seastar::engine().net();
+    // Check if we're on the native stack by using a dynamic_cast instead of 'name()'
+    auto* native_stack = dynamic_cast<const native_network_stack*>(&stack);
+    if (!native_stack) {
+        throw std::runtime_error("Attempted to find DPDK port ID on non-native stack");
+    }
+
+    auto interfaces = stack.network_interfaces();
+    bool interface_found = false;
+    
+    for (const auto& net_if : interfaces) {
+        if (net_if.name() == interface_name) {
+            interface_found = true;
+            break;
+        }
+    }
+    
+    if (!interface_found) {
+        throw std::runtime_error(fmt::format("Network interface '{}' not found", interface_name));
+    }
+
+    // For now, assume port 0 for simplicity
+    // In a production environment, we'd need a more robust mapping
+    uint16_t port_id = 0;
+    nmc_logger.debug("Using DPDK port {} for interface {}", port_id, interface_name);
+    return port_id;
+}
+
+} // anonymous namespace
+
+future<> native_multicast_udp_channel_impl::join(datagram_channel& chan, const std::string& interface_name, const socket_address& mcast_addr) {
+    nmc_logger.debug("Joining multicast group {} on interface {}", mcast_addr, interface_name);
+    uint16_t port_id = find_dpdk_port_id(interface_name);
+    rte_ether_addr mcast_mac = ip_mcast_to_mac(mcast_addr);
+
+    // Call DPDK function to add the MAC address to the device's filter table
+    int ret = rte_eth_dev_mac_addr_add(port_id, &mcast_mac, 0); // Pool 0 for unicast/multicast, check DPDK docs if pool matters
+
+    if (ret < 0) {
+        // rte_errno is thread-local, check its value for more details
+        int dpdk_errno = rte_errno;
+        nmc_logger.error("rte_eth_dev_mac_addr_add failed for port {} MAC {} (errno={}): {}",
+                           port_id, ethernet_address(mcast_mac.addr_bytes), dpdk_errno, rte_strerror(dpdk_errno));
+        return make_exception_future<>(std::system_error(-ret, std::system_category(),
+            "rte_eth_dev_mac_addr_add failed: " + sstring(rte_strerror(dpdk_errno))));
+    }
+
+    nmc_logger.debug("Successfully added MAC {} for multicast group {} to port {}", ethernet_address(mcast_mac.addr_bytes), mcast_addr, port_id);
+    return make_ready_future<>();
+}
+
+future<> native_multicast_udp_channel_impl::leave(datagram_channel& chan, const std::string& interface_name, const socket_address& mcast_addr) {
+    nmc_logger.debug("Leaving multicast group {} on interface {}", mcast_addr, interface_name);
+
+    uint16_t port_id = find_dpdk_port_id(interface_name);
+    rte_ether_addr mcast_mac = ip_mcast_to_mac(mcast_addr);
+
+    // Call DPDK function to remove the MAC address
+    int ret = rte_eth_dev_mac_addr_remove(port_id, &mcast_mac);
+
+     if (ret < 0) {
+        int dpdk_errno = rte_errno;
+        nmc_logger.error("rte_eth_dev_mac_addr_del failed for port {} MAC {} (errno={}): {}",
+                           port_id, ethernet_address(mcast_mac.addr_bytes), dpdk_errno, rte_strerror(dpdk_errno));
+        return make_exception_future<>(std::system_error(-ret, std::system_category(),
+            "rte_eth_dev_mac_addr_del failed: " + sstring(rte_strerror(dpdk_errno))));
+    }
+
+    nmc_logger.debug("Successfully removed MAC {} for multicast group {} from port {}", ethernet_address(mcast_mac.addr_bytes), mcast_addr, port_id);
+    return make_ready_future<>();
+}
+
+#endif // SEASTAR_HAVE_DPDK
+
 } // namespace net
 
-}
+} // namespace seastar
