@@ -52,6 +52,13 @@ struct cpu_stall_detector_config {
     std::function<void ()> report;  // alternative reporting function for tests
 };
 
+}}  // seastar::internal
+
+#ifdef SEASTAR_ENABLE_STALL_DETECTOR
+
+namespace seastar {
+namespace internal {
+
 // Detects stalls in continuations that run for too long
 class cpu_stall_detector {
 protected:
@@ -182,3 +189,9 @@ std::unique_ptr<cpu_stall_detector> make_cpu_stall_detector(cpu_stall_detector_c
 
 }
 }
+
+#else  // not SEASTAR_ENABLE_STALL_DETECTOR
+
+#include <seastar/core/internal/null_stall_detector.hh>
+
+#endif // SEASTAR_ENABLE_STALL_DETECTOR

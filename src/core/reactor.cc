@@ -1138,6 +1138,7 @@ void reactor::start_handling_signal() {
     return _backend->start_handling_signal();
 }
 
+#ifdef SEASTAR_ENABLE_STALL_DETECTOR
 namespace internal {
 
 cpu_stall_detector::cpu_stall_detector(cpu_stall_detector_config cfg)
@@ -1492,6 +1493,16 @@ void
 reactor::block_notifier(int) {
     engine()._cpu_stall_detector->on_signal();
 }
+
+#else // not SEASTAR_ENABLE_STALL_DETECTOR
+
+void reactor::update_blocked_reactor_notify_ms(std::chrono::milliseconds ms) {}
+std::chrono::milliseconds reactor::get_blocked_reactor_notify_ms() const { return std::chrono::milliseconds(0); }
+void reactor::test::set_stall_detector_report_function(std::function<void ()> report) {}
+std::function<void ()> reactor::test::get_stall_detector_report_function() { return nullptr; }
+void reactor::block_notifier(int) {}
+
+#endif // SEASTAR_ENABLE_STALL_DETECTOR
 
 class network_stack_factory {
     network_stack_entry::factory_func _func;
