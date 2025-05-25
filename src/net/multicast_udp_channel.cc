@@ -19,9 +19,6 @@
 
 namespace seastar::net {
 
-// Use the standard logger type
-seastar::logger nmc_log("multicast_channel"); // Changed net_logger to logger
-
 // --- Private Constructor Implementation ---
 multicast_udp_channel::multicast_udp_channel(datagram_channel chan, std::unique_ptr<impl> impl)
     : _chan(std::move(chan))

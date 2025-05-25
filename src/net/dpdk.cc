@@ -69,6 +69,7 @@ module seastar;
 #include <seastar/net/toeplitz.hh>
 #include <seastar/net/native-stack.hh>
 #include "core/vla.hh"
+#include <optional>
 #endif
 
 #if RTE_VERSION <= RTE_VERSION_NUM(2,0,0,16)
@@ -365,6 +366,8 @@ class dpdk_device : public device {
 public:
     rte_eth_dev_info _dev_info = {};
     promise<> _link_ready_promise;
+
+    std::optional<uint16_t> get_dpdk_port_id() const override { return _port_idx; }
 
 private:
     /**

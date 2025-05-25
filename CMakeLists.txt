@@ -353,7 +353,7 @@ set (Seastar_STACK_GUARDS
   "Enable stack guards. Can be ON, OFF or DEFAULT (which enables it for non release builds)")
 
 set (Seastar_SANITIZE
-  "DEFAULT"
+  "OFF"
   CACHE
   STRING
   "Enable ASAN and UBSAN. Can be ON, OFF or DEFAULT (which enables it for Debug and Sanitize)")
