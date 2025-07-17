@@ -1,0 +1,11 @@
+#pragma once
+
+#ifdef SEASTAR_MODULE
+#  define SEASTAR_MODULE_EXPORT export
+#  define SEASTAR_MODULE_EXPORT_BEGIN export {
+#  define SEASTAR_MODULE_EXPORT_END }
+#else
+#  define SEASTAR_MODULE_EXPORT
+#  define SEASTAR_MODULE_EXPORT_BEGIN
+#  define SEASTAR_MODULE_EXPORT_END
+#endif 
