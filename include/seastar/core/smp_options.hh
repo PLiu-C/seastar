@@ -54,6 +54,10 @@ struct smp_options : public program_options::option_group {
     /// Memory reserved to the OS and other processes (if \ref memory not specified),
     /// and is not used by seastar.
     program_options::value<std::string> reserve_memory;
+    /// Per-core memory specification in format "cpu0:size0,cpu1:size1,..."
+    /// (ex: "0:2G,1:1G,2:4G"). When specified, overrides the global memory setting
+    /// for individual cores. Sizes can use suffixes like G, M, K.
+    program_options::value<std::string> per_core_memory;
     /// Path to accessible hugetlbfs mount (typically /dev/hugepages/something).
     program_options::value<std::string> hugepages;
     /// Lock all memory (prevents swapping).

@@ -98,6 +98,9 @@ struct configuration {
     bool assign_orphan_cpus = false;
     std::vector<dev_t> devices;
     unsigned num_io_groups;
+    /// Per-core memory specification mapping from CPU ID to memory size in bytes
+    /// When specified, overrides equal memory distribution
+    std::unordered_map<unsigned, size_t> per_core_memory;
     hwloc::internal::topology_holder topology;
 };
 

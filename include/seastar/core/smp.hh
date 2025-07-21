@@ -50,6 +50,22 @@ SEASTAR_MODULE_EXPORT_BEGIN
 
 class smp_service_group;
 
+/// \brief Seastar SMP (Symmetric Multi-Processing) Support
+///
+/// Seastar supports distributing work across multiple CPU cores using
+/// the smp class. Memory allocation can be configured globally for all cores
+/// or individually per core using the per-core memory configuration feature.
+///
+/// ## Memory Configuration Options
+///
+/// 1. **Global Memory**: Specify total memory to be divided equally among cores
+/// 2. **Per-Core Memory**: Specify memory for individual cores using format
+///    "cpu0:size0,cpu1:size1,..." (e.g., "0:2G,1:1G,2:4G")
+///
+/// When per-core memory is specified, it overrides the global memory setting
+/// for the specified cores. Cores not listed in the per-core specification
+/// will receive an equal share of any remaining memory.
+
 namespace alien {
 
 class instance;

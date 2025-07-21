@@ -35,6 +35,7 @@ module;
 #include <limits>
 #include <filesystem>
 #include <unordered_map>
+#include <numeric>
 #include <fmt/core.h>
 #include <seastar/util/assert.hh>
 #if SEASTAR_HAVE_HWLOC
@@ -603,6 +604,9 @@ resources allocate(configuration& c) {
     // limit memory address to fit in 36-bit, see core/memory.cc:Memory map
     constexpr size_t max_mem_per_proc = 1UL << 36;
     auto mem_per_proc = std::min(align_down<size_t>(mem / procs, 2 << 20), max_mem_per_proc);
+    
+    // Check if per-core memory configuration is specified
+    bool use_per_core_memory = !c.per_core_memory.empty();
 
     resources ret;
     std::unordered_map<unsigned, hwloc_obj_t> cpu_to_node;
@@ -691,7 +695,29 @@ resources allocate(configuration& c) {
         auto node = cpu_to_node.at(cpu_id);
         cpu this_cpu;
         this_cpu.cpu_id = cpu_id;
-        size_t remain = mem_per_proc - alloc_from_node(this_cpu, node, topo_used_mem, mem_per_proc);
+        
+        // Determine memory allocation for this CPU
+        size_t target_mem_per_proc;
+        if (use_per_core_memory) {
+            auto per_core_iter = c.per_core_memory.find(cpu_id);
+            if (per_core_iter != c.per_core_memory.end()) {
+                // Use specified memory for this core
+                target_mem_per_proc = std::min(align_down<size_t>(per_core_iter->second, 2 << 20), max_mem_per_proc);
+            } else {
+                // Fall back to equal distribution for cores not specified
+                auto remaining_cores = std::count_if(c.cpu_set.begin(), c.cpu_set.end(), 
+                    [&c](unsigned cpu) { return c.per_core_memory.find(cpu) == c.per_core_memory.end(); });
+                auto used_memory = std::accumulate(c.per_core_memory.begin(), c.per_core_memory.end(), 
+                    size_t{0}, [](size_t sum, const auto& pair) { return sum + pair.second; });
+                auto remaining_memory = (used_memory < mem) ? mem - used_memory : 0;
+                target_mem_per_proc = remaining_cores > 0 ? 
+                    std::min(align_down<size_t>(remaining_memory / remaining_cores, 2 << 20), max_mem_per_proc) : 0;
+            }
+        } else {
+            target_mem_per_proc = mem_per_proc;
+        }
+        
+        size_t remain = target_mem_per_proc - alloc_from_node(this_cpu, node, topo_used_mem, target_mem_per_proc);
 
         remains.emplace_back(std::move(this_cpu), remain);
     }
@@ -766,9 +792,34 @@ resources allocate(configuration& c) {
     ret.cpus.reserve(procs);
     // limit memory address to fit in 36-bit, see core/memory.cc:Memory map
     constexpr size_t max_mem_per_proc = 1UL << 36;
-    auto mem_per_proc = std::min(mem / procs, max_mem_per_proc);
-    for (auto cpuid : c.cpu_set) {
-        ret.cpus.push_back(cpu{cpuid, {{mem_per_proc, 0}}});
+    
+    // Check if per-core memory configuration is specified
+    if (!c.per_core_memory.empty()) {
+        // Use per-core memory configuration
+        for (auto cpuid : c.cpu_set) {
+            auto per_core_iter = c.per_core_memory.find(cpuid);
+            size_t mem_per_proc;
+            if (per_core_iter != c.per_core_memory.end()) {
+                // Use specified memory for this core
+                mem_per_proc = std::min(per_core_iter->second, max_mem_per_proc);
+            } else {
+                // Fall back to equal distribution for cores not specified
+                auto remaining_cores = std::count_if(c.cpu_set.begin(), c.cpu_set.end(), 
+                    [&c](unsigned cpu) { return c.per_core_memory.find(cpu) == c.per_core_memory.end(); });
+                auto used_memory = std::accumulate(c.per_core_memory.begin(), c.per_core_memory.end(), 
+                    size_t{0}, [](size_t sum, const auto& pair) { return sum + pair.second; });
+                auto remaining_memory = (used_memory < mem) ? mem - used_memory : 0;
+                mem_per_proc = remaining_cores > 0 ? 
+                    std::min(remaining_memory / remaining_cores, max_mem_per_proc) : 0;
+            }
+            ret.cpus.push_back(cpu{cpuid, {{mem_per_proc, 0}}});
+        }
+    } else {
+        // Use equal distribution (original behavior)
+        auto mem_per_proc = std::min(mem / procs, max_mem_per_proc);
+        for (auto cpuid : c.cpu_set) {
+            ret.cpus.push_back(cpu{cpuid, {{mem_per_proc, 0}}});
+        }
     }
 
     ret.ioq_topology.emplace(0, allocate_io_queues(c, ret.cpus));

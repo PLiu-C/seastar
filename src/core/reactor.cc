@@ -135,6 +135,7 @@ module seastar;
 #include <seastar/core/posix.hh>
 #include <seastar/core/prefetch.hh>
 #include <seastar/core/print.hh>
+#include <seastar/util/conversions.hh>
 #include <seastar/core/reactor.hh>
 #include <seastar/core/report_exception.hh>
 #include <seastar/core/resource.hh>
@@ -3879,6 +3880,7 @@ smp_options::smp_options(program_options::option_group* parent_group)
     , cpuset(*this, "cpuset", {}, "CPUs to use (in cpuset(7) list format (ex: 0,1-3,7); default: all))")
     , memory(*this, "memory", std::nullopt, "memory to use, in bytes (ex: 4G) (default: all)")
     , reserve_memory(*this, "reserve-memory", {}, "memory reserved to OS (if --memory not specified)")
+    , per_core_memory(*this, "per-core-memory", {}, "per-core memory specification (ex: \"0:2G,1:1G,2:4G\")")
     , hugepages(*this, "hugepages", {}, "path to accessible hugetlbfs mount (typically /dev/hugepages/something)")
     , lock_memory(*this, "lock-memory", {}, "lock all memory (prevents swapping)")
     , thread_affinity(*this, "thread-affinity", true, "pin threads to their cpus (disable for overprovisioning)")
@@ -4319,6 +4321,8 @@ unsigned smp::adjust_max_networking_aio_io_control_blocks(unsigned network_iocbs
     return network_iocbs;
 }
 
+static std::unordered_map<unsigned, size_t> parse_per_core_memory(const std::string& spec);
+
 void smp::configure(const smp_options& smp_opts, const reactor_options& reactor_opts)
 {
     bool use_transparent_hugepages = !reactor_opts.overprovisioned;
@@ -4427,6 +4431,11 @@ void smp::configure(const smp_options& smp_opts, const reactor_options& reactor_
         rc.reserve_memory = parse_memory_size(smp_opts.reserve_memory.get_value());
     }
     rc.reserve_additional_memory_per_shard = smp_opts.reserve_additional_memory_per_shard;
+    
+    // Parse per-core memory configuration if specified
+    if (smp_opts.per_core_memory) {
+        rc.per_core_memory = parse_per_core_memory(smp_opts.per_core_memory.get_value());
+    }
     std::optional<std::string> hugepages_path;
     if (smp_opts.hugepages) {
         hugepages_path = smp_opts.hugepages.get_value();
@@ -5327,5 +5336,55 @@ void task::make_backtrace() noexcept {
 }
 
 #endif
+
+extern logger seastar_logger;
+
+/// Parse per-core memory configuration string (format: "cpu0:size0,cpu1:size1,...")
+/// Returns a map from CPU ID to memory size in bytes
+static std::unordered_map<unsigned, size_t> parse_per_core_memory(const std::string& spec) {
+    std::unordered_map<unsigned, size_t> result;
+    
+    if (spec.empty()) {
+        return result;
+    }
+    
+    // Split by comma to get individual cpu:memory pairs
+    std::vector<std::string> pairs;
+    std::stringstream ss(spec);
+    std::string pair;
+    
+    while (std::getline(ss, pair, ',')) {
+        // Remove whitespace
+        pair.erase(std::remove_if(pair.begin(), pair.end(), ::isspace), pair.end());
+        
+        if (pair.empty()) {
+            continue;
+        }
+        
+        // Split by colon to get cpu and memory
+        auto colon_pos = pair.find(':');
+        if (colon_pos == std::string::npos) {
+            throw std::runtime_error(fmt::format("Invalid per-core memory specification: '{}'. Expected format: cpu:memory", pair));
+        }
+        
+        auto cpu_str = pair.substr(0, colon_pos);
+        auto memory_str = pair.substr(colon_pos + 1);
+        
+        try {
+            unsigned cpu_id = std::stoul(cpu_str);
+            size_t memory_size = parse_memory_size(memory_str);
+            
+            if (result.find(cpu_id) != result.end()) {
+                throw std::runtime_error(fmt::format("Duplicate CPU specification for CPU {}", cpu_id));
+            }
+            
+            result[cpu_id] = memory_size;
+        } catch (const std::exception& e) {
+            throw std::runtime_error(fmt::format("Invalid per-core memory specification '{}': {}", pair, e.what()));
+        }
+    }
+    
+    return result;
+}
 
 }
